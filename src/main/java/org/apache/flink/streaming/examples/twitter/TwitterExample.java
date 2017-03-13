@@ -23,9 +23,9 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.connectors.rabbitmq.RMQSink;
 import org.apache.flink.streaming.connectors.rabbitmq.common.RMQConnectionConfig;
 import org.apache.flink.streaming.connectors.twitter.TwitterSource;
+import org.apache.flink.streaming.examples.twitter.util.RabitMqCustom;
 import org.apache.flink.streaming.examples.twitter.util.TwitterExampleData;
 import org.apache.flink.streaming.util.serialization.SimpleStringSchema;
 import org.apache.flink.util.Collector;
@@ -75,12 +75,11 @@ public class TwitterExample {
         ) {
 
       streamSource = env.addSource(new TwitterSource(params.getProperties()));
-
       DataStream<String> dataStream = streamSource;
 
       dataStream.print();
 
-      final org.apache.flink.streaming.connectors.rabbitmq.common.RMQConnectionConfig connectionConfig =
+      final RMQConnectionConfig connectionConfig =
           new RMQConnectionConfig.Builder()
               .setHost("localhost")
               .setVirtualHost("/")
@@ -89,9 +88,9 @@ public class TwitterExample {
               .setPort(5672)
               .build();
 
-      streamSource.addSink(new RMQSink<String>(
+      streamSource.addSink(new RabitMqCustom<String>(
           connectionConfig,            // config for the RabbitMQ connection
-          "gs-guide-websocket",                 // name of the RabbitMQ queue to send messages to
+          "twitterData",                 // name of the RabbitMQ queue to send messages to
           new SimpleStringSchema()));
 
       env.execute("Twitter Streaming Example");
