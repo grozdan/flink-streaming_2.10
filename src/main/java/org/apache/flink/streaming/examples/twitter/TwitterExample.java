@@ -17,36 +17,20 @@
 
 package org.apache.flink.streaming.examples.twitter;
 
-import java.util.StringTokenizer;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.connectors.rabbitmq.common.RMQConnectionConfig;
 import org.apache.flink.streaming.connectors.twitter.TwitterSource;
 import org.apache.flink.streaming.examples.twitter.util.RabitMqCustom;
-import org.apache.flink.streaming.examples.twitter.util.TwitterExampleData;
 import org.apache.flink.streaming.util.serialization.SimpleStringSchema;
 import org.apache.flink.util.Collector;
+import org.apache.sling.commons.json.JSONObject;
 import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.map.ObjectMapper;
 
-/**
- * Implements the "TwitterStream" program that computes a most used word occurrence over JSON objects in a streaming
- * fashion. <p> The input is a Tweet stream from a TwitterSource. </p> <p> Usage: <code>Usage: TwitterExample [--output
- * <path>] [--twitter-source.consumerKey <key> --twitter-source.consumerSecret <secret> --twitter-source.token <token>
- * --twitter-source.tokenSecret <tokenSecret>]</code><br>
- *
- * If no parameters are provided, the program is run with default data from {@link TwitterExampleData}. </p> <p> This
- * example shows how to: <ul> <li>acquire external data, <li>use in-line defined functions, <li>handle flattened stream
- * inputs. </ul>
- */
 public class TwitterExample {
-
-  // *************************************************************************
-  // PROGRAM
-  // *************************************************************************
 
   public static void main(String[] args) throws Exception {
 
@@ -59,14 +43,12 @@ public class TwitterExample {
     System.out.println("Usage: TwitterExample [--output <path>] " +
         "[--twitter-source.consumerKey <key> --twitter-source.consumerSecret <secret> --twitter-source.token <token> --twitter-source.tokenSecret <tokenSecret>]");
 
-    // set up the execution environment
     StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-    // make parameters available in the web interface
+
     env.getConfig().setGlobalJobParameters(params);
 
     env.setParallelism(params.getInt("parallelism", 1));
 
-    // get input data
     DataStream<String> streamSource;
     if (params.has(TwitterSource.CONSUMER_KEY) &&
         params.has(TwitterSource.CONSUMER_SECRET) &&
@@ -74,11 +56,9 @@ public class TwitterExample {
         params.has(TwitterSource.TOKEN_SECRET)
         ) {
 
-      streamSource = env.addSource(new TwitterSource(params.getProperties()));
+      streamSource = env.addSource(new TwitterSource(params.getProperties())).flatMap(new Splitter());
       DataStream<String> dataStream = streamSource;
-
-      dataStream.print();
-
+      //dataStream.print();
       final RMQConnectionConfig connectionConfig =
           new RMQConnectionConfig.Builder()
               .setHost("localhost")
@@ -90,40 +70,52 @@ public class TwitterExample {
 
       streamSource.addSink(new RabitMqCustom<String>(
           connectionConfig,            // config for the RabbitMQ connection
-          "twitterData",                 // name of the RabbitMQ queue to send messages to
+          "positions4",                 // name of the RabbitMQ queue to send messages to
           new SimpleStringSchema()));
 
       env.execute("Twitter Streaming Example");
     }
   }
 
-  public static class Splitter implements FlatMapFunction<String, Tuple2<String, Integer>> {
+  public static class Splitter implements FlatMapFunction<String, String> {
 
     private transient ObjectMapper jsonParser;
 
     @Override
-    public void flatMap(String sentence, Collector<Tuple2<String, Integer>> out) throws Exception {
+    public void flatMap(String sentence, Collector<String> out) throws Exception {
       if (jsonParser == null) {
         jsonParser = new ObjectMapper();
       }
       JsonNode jsonNode = jsonParser.readValue(sentence, JsonNode.class);
 
-      boolean isEnglish = jsonNode.has("user") && jsonNode.get("user").has("lang") && jsonNode.get("user")
-          .get("lang")
-          .asText()
-          .equals("en");
-
       boolean hasText = jsonNode.has("text");
-      if (isEnglish && hasText) {
+      if (hasText) {
+        JSONObject obj = new JSONObject();
+        String tweetText = jsonNode.get("text").toString();
 
-        StringTokenizer tokenizer = new StringTokenizer(jsonNode.get("text").asText());
-        // System.err.println(jsonNode.get("text").asText());
-        // split the message
-        while (tokenizer.hasMoreTokens()) {
-          String result = tokenizer.nextToken().replaceAll("\\s*", "").toLowerCase();
-          out.collect(new Tuple2<String, Integer>(result, 1));
+        obj.put("name", tweetText);
+        if (jsonNode.has("coordinates")) {
+
+          JsonNode coordinates = jsonNode.get("coordinates");
+          if (coordinates != null && coordinates.get("coordinates") != null) {
+            String str = coordinates.get("coordinates").toString();
+            String[] splitCoordinates = str.split(",");
+            if (splitCoordinates.length == 2) {
+              String longitude = splitCoordinates[0];
+              String latitide = splitCoordinates[1];
+
+              obj.put("longitude", Double.parseDouble(longitude.substring(1, longitude.length()).toString()));
+              obj.put("latitude", Double.parseDouble(latitide.substring(0, latitide.length() - 1).toString()));
+              obj.put("radius", 4);
+              System.err.println(obj.toString());
+              //out.collect(obj.toString());
+            }
+          }
         }
+        out.collect(obj.toString());
       }
     }
   }
 }
+
+
