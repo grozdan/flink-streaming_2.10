@@ -17,10 +17,14 @@
 
 package org.apache.flink.streaming.examples.twitter;
 
+import java.util.StringTokenizer;
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.rabbitmq.common.RMQConnectionConfig;
 import org.apache.flink.streaming.connectors.twitter.TwitterSource;
 import org.apache.flink.streaming.examples.twitter.util.RabitMqCustom;
@@ -56,9 +60,6 @@ public class TwitterExample {
         params.has(TwitterSource.TOKEN_SECRET)
         ) {
 
-      streamSource = env.addSource(new TwitterSource(params.getProperties())).flatMap(new Splitter());
-      DataStream<String> dataStream = streamSource;
-      //dataStream.print();
       final RMQConnectionConfig connectionConfig =
           new RMQConnectionConfig.Builder()
               .setHost("localhost")
@@ -68,16 +69,42 @@ public class TwitterExample {
               .setPort(5672)
               .build();
 
-      streamSource.addSink(new RabitMqCustom<String>(
-          connectionConfig,            // config for the RabbitMQ connection
-          "positions4",                 // name of the RabbitMQ queue to send messages to
+      streamSource = env.addSource(new TwitterSource(params.getProperties()));
+      DataStream<String> locationMapStream = streamSource.flatMap(new WorldMapDataCreator());
+      //locationMapStream.print();
+      DataStream<Tuple2<String, Integer>> wordCloudStream = streamSource.flatMap(new WordCloudDataCreator())
+          .keyBy(0)
+          .timeWindow(Time.seconds(15))
+          .sum(1);
+      //.filter(tuple -> (Integer) tuple.getField(1) > 3);
+
+      DataStream<String> parsed = wordCloudStream.map(new MapFunction<Tuple2<String, Integer>, String>() {
+        @Override
+        public String map(Tuple2<String, Integer> stringIntegerTuple2) throws Exception {
+          JSONObject jsonObject = new JSONObject();
+          int size = Integer.parseInt(stringIntegerTuple2.getField(1).toString());
+          jsonObject.put("text", stringIntegerTuple2.getField(0).toString());
+          jsonObject.put("size", size);
+          return jsonObject.toString();
+        }
+      });
+      parsed.print();
+
+      locationMapStream.addSink(new RabitMqCustom<String>(
+          connectionConfig,
+          "positions5",
+          new SimpleStringSchema()));
+
+      parsed.addSink(new RabitMqCustom<>(
+          connectionConfig,
+          "wordCloud",
           new SimpleStringSchema()));
 
       env.execute("Twitter Streaming Example");
     }
   }
 
-  public static class Splitter implements FlatMapFunction<String, String> {
+  public static class WorldMapDataCreator implements FlatMapFunction<String, String> {
 
     private transient ObjectMapper jsonParser;
 
@@ -107,12 +134,49 @@ public class TwitterExample {
               obj.put("longitude", Double.parseDouble(longitude.substring(1, longitude.length()).toString()));
               obj.put("latitude", Double.parseDouble(latitide.substring(0, latitide.length() - 1).toString()));
               obj.put("radius", 4);
-              System.err.println(obj.toString());
+              //System.err.println(obj.toString());
               //out.collect(obj.toString());
             }
           }
         }
         out.collect(obj.toString());
+      }
+    }
+  }
+
+  public static class WordCloudDataCreator implements FlatMapFunction<String, Tuple2<String, Integer>> {
+    private transient ObjectMapper jsonParser;
+
+    /**
+     * Select the language from the incoming JSON text
+     */
+    @Override
+    public void flatMap(String value, Collector<Tuple2<String, Integer>> out) throws Exception {
+      if (jsonParser == null) {
+        jsonParser = new ObjectMapper();
+      }
+      JsonNode jsonNode = jsonParser.readValue(value, JsonNode.class);
+
+      boolean isEnglish = jsonNode.has("user") && jsonNode.get("user").has("lang") && jsonNode.get("user")
+          .get("lang")
+          .asText()
+          .equals("en");
+
+      boolean hasText = jsonNode.has("text");
+      if (isEnglish && hasText) {
+        // message of tweet
+        String tweetText = jsonNode.get("text").asText();
+
+        StringTokenizer tokenizer = new StringTokenizer(jsonNode.get("text").asText());
+
+        // split the message
+        while (tokenizer.hasMoreTokens()) {
+          String result = tokenizer.nextToken().trim().toLowerCase();
+
+          if (!result.equals("") && result.length() > 2) {
+            out.collect(new Tuple2<>(result, 1));
+          }
+        }
       }
     }
   }
