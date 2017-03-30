@@ -35,6 +35,7 @@ import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.map.ObjectMapper;
 
 public class TwitterExample {
+  public static int counter = 0;
 
   public static void main(String[] args) throws Exception {
 
@@ -74,7 +75,7 @@ public class TwitterExample {
 
       locationMapStream.addSink(new RabitMqCustom<String>(
           connectionConfig,
-          "positions8",
+          "positions9",
           new SimpleStringSchema()));
 
       //locationMapStream.print();
@@ -130,31 +131,8 @@ public class TwitterExample {
       //wordCloud.print();
       wordCloud.addSink(new RabitMqCustom<String>(
           connectionConfig,
-          "wordCloud3",
+          "wordCloud4",
           new SimpleStringSchema()));
-
-      //            DataStream<String> parsed = wordCloudStream.map(new MapFunction<Tuple2<String, Integer>, String>() {
-      //                @Override
-      //                public String map(Tuple2<String, Integer> stringIntegerTuple2) throws Exception {
-      //                    JSONObject jsonObject = new JSONObject();
-      //                    int size = Integer.parseInt(stringIntegerTuple2.getField(1).toString());
-      //                    jsonObject.put("text", stringIntegerTuple2.getField(0).toString());
-      //                    jsonObject.put("size", size);
-      //                    return jsonObject.toString();
-      //                }
-      //            });
-      //            parsed.print();
-
-      //      locationMapStream.addSink(new RabitMqCustom<String>(
-      //          connectionConfig,
-      //          "positions5",
-      //          new SimpleStringSchema()));
-      //
-      //      parsed.addSink(new RabitMqCustom<>(
-      //          connectionConfig,
-      //          "wordCloud",
-      //          new SimpleStringSchema()));
-
       env.execute("Twitter Streaming Example");
     }
   }
@@ -174,40 +152,64 @@ public class TwitterExample {
       if (hasText) {
         JSONObject obj = new JSONObject();
         String tweetText = jsonNode.get("text").toString();
-        String place = jsonNode.get("place").toString();
         JSONObject jsono = createObjectFromTweet(jsonNode.get("place"));
-        if (place != null && !place.equals("null")) {
-          System.err.println(place);
+        jsono.put("name", tweetText);
+        //if (place != null && !place.equals("null")) {
+        //  System.err.println(place);
+        //}
+        //obj.put("name", tweetText);
+        //if (jsonNode.has("coordinates")) {
+        //
+        //  JsonNode coordinates = jsonNode.get("coordinates");
+        //  if (coordinates != null && coordinates.get("coordinates") != null) {
+        //    String str = coordinates.get("coordinates").toString();
+        //    String[] splitCoordinates = str.split(",");
+        //    if (splitCoordinates.length == 2) {
+        //      String longitude = splitCoordinates[0];
+        //      String latitide = splitCoordinates[1];
+        //      Double lng = Double.parseDouble(longitude.substring(1, longitude.length()));
+        //      Double lat = Double.parseDouble(latitide.substring(0, latitide.length() - 1));
+        //      obj.put("longitude", lng);
+        //      obj.put("latitude", lat);
+        //      obj.put("radius", 4);
+        //
+        //      putTweetInDatabase(tweetText, lat, lng);
+        //      System.err.println(obj.toString());
+        //      //out.collect(obj.toString());
+        //    }
+        //  }
+        //}
+        if (jsono.has("latitude")) {
+          counter++;
+          System.err.println(counter + ". " + jsono.toString());
+          //putTweetInDatabase(tweetText, (Double) jsono.get("latitude"),
+          // (Double) jsono.get("longitude"));
+          out.collect(jsono.toString());
         }
-        obj.put("name", tweetText);
-        if (jsonNode.has("coordinates")) {
-
-          JsonNode coordinates = jsonNode.get("coordinates");
-          if (coordinates != null && coordinates.get("coordinates") != null) {
-            String str = coordinates.get("coordinates").toString();
-            String[] splitCoordinates = str.split(",");
-            if (splitCoordinates.length == 2) {
-              String longitude = splitCoordinates[0];
-              String latitide = splitCoordinates[1];
-              Double lng = Double.parseDouble(longitude.substring(1, longitude.length()));
-              Double lat = Double.parseDouble(latitide.substring(0, latitide.length() - 1));
-              obj.put("longitude", lng);
-              obj.put("latitude", lat);
-              obj.put("radius", 4);
-
-              putTweetInDatabase(tweetText, lat, lng);
-              System.err.println(obj.toString());
-              //out.collect(obj.toString());
-            }
-          }
-        }
-        out.collect(obj.toString());
       }
     }
 
     private JSONObject createObjectFromTweet(JsonNode place) {
-      System.err.println(place.toString());
-      return null;
+      //System.out.println(place.toString());
+      JSONObject obj = new JSONObject();
+      try {
+        if (place != null && !place.toString().equals("null")) {
+          String coordinates = place.get("bounding_box").get("coordinates").get(0).get(0).toString();
+          String[] splitCoordinates = coordinates.split(",");
+          if (splitCoordinates.length == 2) {
+            String longitude = splitCoordinates[0];
+            String latitude = splitCoordinates[1];
+            Double lng = Double.parseDouble(longitude.substring(1, longitude.length()));
+            Double lat = Double.parseDouble(latitude.substring(0, latitude.length() - 1));
+            obj.put("longitude", lng);
+            obj.put("latitude", lat);
+            obj.put("radius", 4);
+          }
+        }
+      } catch (Exception e) {
+        System.err.println("EEEEEEEERRRRRRROOOORRRRRR");
+      }
+      return obj;
     }
 
     private void putTweetInDatabase(String tweetText, Double lat, Double lng) throws IOException, JSONException {
@@ -215,33 +217,31 @@ public class TwitterExample {
           + lng + "&username=goki";
       String countryObject = getCountryFromLocation(url);
       JSONObject obj = new JSONObject(countryObject);
-      String country = obj.getString("countryName");
-      if (country != null) {
-        new Thread(new Runnable() {
-          public void run() {
-            try {
-              Class.forName("com.mysql.cj.jdbc.Driver");
-              Connection con = DriverManager.getConnection(
-                  "jdbc:mysql://localhost:3306/apache-flink-db?useUnicode=true&characterEncoding=UTF-8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&useSSL=false",
-                  "root", "");
-              String query = " insert into country_tweet (country, tweet,latitude,longitude,radius)"
-                  + " values (?, ?, ?, ?, ?)";
+      if (obj.has("countryName")) {
+        String country = obj.getString("countryName");
+        if (country != null) {
+          try {
+            Class.forName("com.mysql.cj.jdbc.Driver");
+            Connection con = DriverManager.getConnection(
+                "jdbc:mysql://localhost:3306/apache-flink-db?useUnicode=true&characterEncoding=UTF-8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&useSSL=false",
+                "root", "");
+            String query = " insert into country_tweet (country, tweet,latitude,longitude,radius)"
+                + " values (?, ?, ?, ?, ?)";
 
-              PreparedStatement preparedStmt = con.prepareStatement(query);
-              preparedStmt.setString(1, country);
-              preparedStmt.setString(2, tweetText);
-              preparedStmt.setDouble(3, lat);
-              preparedStmt.setDouble(4, lng);
-              preparedStmt.setInt(5, 4);
+            PreparedStatement preparedStmt = con.prepareStatement(query);
+            preparedStmt.setString(1, country);
+            preparedStmt.setString(2, tweetText);
+            preparedStmt.setDouble(3, lat);
+            preparedStmt.setDouble(4, lng);
+            preparedStmt.setInt(5, 4);
 
-              preparedStmt.execute();
+            preparedStmt.execute();
 
-              con.close();
-            } catch (Exception e) {
-              System.out.println(e);
-            }
+            con.close();
+          } catch (Exception e) {
+            System.out.println(e);
           }
-        }).start();
+        }
       }
     }
 
