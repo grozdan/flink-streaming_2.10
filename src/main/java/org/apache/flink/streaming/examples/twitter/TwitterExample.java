@@ -122,8 +122,6 @@ public class TwitterExample {
                     return null;
                   })
                   .collect(Collectors.joining(","));
-              //JSONArray arr = new JSONArray();
-              //arr.put(wordCloud);
               collector.collect(wordCloud);
             }
           });
@@ -154,43 +152,19 @@ public class TwitterExample {
         String tweetText = jsonNode.get("text").toString();
         JSONObject jsono = createObjectFromTweet(jsonNode.get("place"));
         jsono.put("name", tweetText);
-        //if (place != null && !place.equals("null")) {
-        //  System.err.println(place);
-        //}
-        //obj.put("name", tweetText);
-        //if (jsonNode.has("coordinates")) {
-        //
-        //  JsonNode coordinates = jsonNode.get("coordinates");
-        //  if (coordinates != null && coordinates.get("coordinates") != null) {
-        //    String str = coordinates.get("coordinates").toString();
-        //    String[] splitCoordinates = str.split(",");
-        //    if (splitCoordinates.length == 2) {
-        //      String longitude = splitCoordinates[0];
-        //      String latitide = splitCoordinates[1];
-        //      Double lng = Double.parseDouble(longitude.substring(1, longitude.length()));
-        //      Double lat = Double.parseDouble(latitide.substring(0, latitide.length() - 1));
-        //      obj.put("longitude", lng);
-        //      obj.put("latitude", lat);
-        //      obj.put("radius", 4);
-        //
-        //      putTweetInDatabase(tweetText, lat, lng);
-        //      System.err.println(obj.toString());
-        //      //out.collect(obj.toString());
-        //    }
-        //  }
-        //}
         if (jsono.has("latitude")) {
-          counter++;
-          System.err.println(counter + ". " + jsono.toString());
-          //putTweetInDatabase(tweetText, (Double) jsono.get("latitude"),
-          // (Double) jsono.get("longitude"));
-          out.collect(jsono.toString());
+          boolean result =
+              putTweetInDatabase(tweetText, (Double) jsono.get("latitude"), (Double) jsono.get("longitude"));
+          if (result) {
+            counter++;
+            System.err.println(counter + ". " + jsono.toString());
+            out.collect(jsono.toString());
+          }
         }
       }
     }
 
     private JSONObject createObjectFromTweet(JsonNode place) {
-      //System.out.println(place.toString());
       JSONObject obj = new JSONObject();
       try {
         if (place != null && !place.toString().equals("null")) {
@@ -212,7 +186,7 @@ public class TwitterExample {
       return obj;
     }
 
-    private void putTweetInDatabase(String tweetText, Double lat, Double lng) throws IOException, JSONException {
+    private boolean putTweetInDatabase(String tweetText, Double lat, Double lng) throws IOException, JSONException {
       String url = "http://ws.geonames.org/countryCodeJSON?lat=" + lat + "&lng="
           + lng + "&username=goki";
       String countryObject = getCountryFromLocation(url);
@@ -227,7 +201,7 @@ public class TwitterExample {
                 "root", "");
             String query = " insert into country_tweet (country, tweet,latitude,longitude,radius)"
                 + " values (?, ?, ?, ?, ?)";
-
+            System.out.println(country + "-" +tweetText);
             PreparedStatement preparedStmt = con.prepareStatement(query);
             preparedStmt.setString(1, country);
             preparedStmt.setString(2, tweetText);
@@ -238,11 +212,15 @@ public class TwitterExample {
             preparedStmt.execute();
 
             con.close();
+            return true;
           } catch (Exception e) {
+
             System.out.println(e);
+            return false;
           }
         }
       }
+      return false;
     }
 
     private String getCountryFromLocation(String urlString) throws IOException {
@@ -263,9 +241,6 @@ public class TwitterExample {
   public static class WordCloudDataCreator implements FlatMapFunction<String, Tuple2<String, Integer>> {
     private transient ObjectMapper jsonParser;
 
-    /**
-     * Select the language from the incoming JSON text
-     */
     @Override
     public void flatMap(String value, Collector<Tuple2<String, Integer>> out) throws Exception {
       if (jsonParser == null) {
@@ -280,12 +255,8 @@ public class TwitterExample {
 
       boolean hasText = jsonNode.has("text");
       if (isEnglish && hasText) {
-        // message of tweet
-        String tweetText = jsonNode.get("text").asText();
-
         StringTokenizer tokenizer = new StringTokenizer(jsonNode.get("text").asText());
 
-        // split the message
         while (tokenizer.hasMoreTokens()) {
           String result = tokenizer.nextToken().trim().toLowerCase().replaceAll("[^A-Za-z0-9#]", "");
 
