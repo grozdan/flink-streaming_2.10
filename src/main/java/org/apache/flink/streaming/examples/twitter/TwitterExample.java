@@ -27,6 +27,7 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.connectors.rabbitmq.common.RMQConnectionConfig;
 import org.apache.flink.streaming.connectors.twitter.TwitterSource;
 import org.apache.flink.streaming.examples.twitter.util.RabitMqCustom;
+import org.apache.flink.streaming.examples.twitter.util.UtilsStatic;
 import org.apache.flink.streaming.util.serialization.SimpleStringSchema;
 import org.apache.flink.util.Collector;
 import org.apache.sling.commons.json.JSONException;
@@ -36,7 +37,8 @@ import org.codehaus.jackson.map.ObjectMapper;
 
 public class TwitterExample {
   public static int counter = 0;
-
+  public static final int WORDS_IN_CLOUD = 50;
+  public static final int WORD_CLOUD_WINDOW_SECONDS = 20;
   public static void main(String[] args) throws Exception {
 
     args = new String[] {"--output", "C:\\Users\\Grozdan.Madjarov\\Desktop\\result_data.txt",
@@ -45,6 +47,7 @@ public class TwitterExample {
         "2788099943-FkkfPcAYSXwcvaxou3LykDq2zDYUgQ37WaX3buE", "--twitter-source.tokenSecret",
         "PCya9prxmGe7vUDt1HUFkmY0OuJ7m21YrN5VOHgsXFB9y"};
     final ParameterTool params = ParameterTool.fromArgs(args);
+
     System.out.println("Usage: TwitterExample [--output <path>] " +
         "[--twitter-source.consumerKey <key> --twitter-source.consumerSecret <secret> --twitter-source.token <token> --twitter-source.tokenSecret <tokenSecret>]");
 
@@ -75,19 +78,19 @@ public class TwitterExample {
 
       locationMapStream.addSink(new RabitMqCustom<String>(
           connectionConfig,
-          "positions9",
+          "positions10",
           new SimpleStringSchema()));
 
       //locationMapStream.print();
       DataStream<Tuple2<String, Integer>> wordCloudStream = streamSource.flatMap(new WordCloudDataCreator())
           .keyBy(0)
-          .timeWindow(Time.seconds(10))
+          .timeWindow(Time.seconds(WORD_CLOUD_WINDOW_SECONDS))
           .sum(1);
 
       //wordCloudStream.print();
 
       AllWindowedStream<Tuple2<String, Integer>, TimeWindow> windowWordCLoud =
-          wordCloudStream.windowAll(TumblingProcessingTimeWindows.of(Time.seconds(10)));
+          wordCloudStream.windowAll(TumblingProcessingTimeWindows.of(Time.seconds(WORD_CLOUD_WINDOW_SECONDS)));
 
       DataStream<String> wordCloud =
           windowWordCLoud.apply(new AllWindowFunction<Tuple2<String, Integer>, String, TimeWindow>() {
@@ -108,31 +111,91 @@ public class TwitterExample {
               });
 
               String wordCloud = sortedWordsFrequncies.stream()
-                  .limit(50)
-                  .map(word -> {
-                    JSONObject jsonObject = new JSONObject();
-                    int size = Integer.parseInt(word.getField(1).toString());
-                    try {
-                      jsonObject.put("text", word.getField(0).toString());
-                      jsonObject.put("size", size * 10);
-                      return jsonObject.toString();
-                    } catch (JSONException e) {
-                      e.printStackTrace();
+
+                  //.map(word -> {
+                  //  JSONObject jsonObject = new JSONObject();
+                  //  int size = Integer.parseInt(word.getField(1).toString());
+                  //  try {
+                  //    jsonObject.put("text", word.getField(0).toString());
+                  //    jsonObject.put("size", size * 10);
+                  //    return jsonObject.toString();
+                  //  } catch (JSONException e) {
+                  //    e.printStackTrace();
+                  //  }
+                  //  return null;
+                  //})
+                  .filter(wordFrequency -> {
+                    String word = wordFrequency.getField(0);
+                    if (!UtilsStatic.getStopWords().contains(word)) {
+                      return true;
                     }
-                    return null;
+                    return false;
                   })
-                  .collect(Collectors.joining(","));
+                  .limit(WORDS_IN_CLOUD)
+                  .map(wordFrequency -> wordFrequency.toString())//delete this later
+                  .collect(Collectors.joining("."));
+              putWordCloudInDatabase(wordCloud);
               collector.collect(wordCloud);
             }
           });
 
       //wordCloud.print();
-      wordCloud.addSink(new RabitMqCustom<String>(
-          connectionConfig,
-          "wordCloud4",
-          new SimpleStringSchema()));
+      //wordCloud.addSink(new RabitMqCustom<String>(
+      //    connectionConfig,
+      //    "wordCloud4",
+      //    new SimpleStringSchema()));
       env.execute("Twitter Streaming Example");
     }
+  }
+
+  private static java.sql.Timestamp getCurrentTimeStamp() {
+
+    java.util.Date today = new java.util.Date();
+    return new java.sql.Timestamp(today.getTime());
+  }
+
+  private static void putWordCloudInDatabase(String wordCloud) throws JSONException {
+    wordCloud = formatTuples(wordCloud);
+
+    try {
+      Class.forName("com.mysql.cj.jdbc.Driver");
+      Connection con = DriverManager.getConnection(
+          "jdbc:mysql://localhost:3306/apache-flink-db?useUnicode=true&characterEncoding=UTF-8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&useSSL=false",
+          "root", "");
+      String query = " insert into word_cloud_model (date_time, tweets_per_country)"
+          + " values (?, ?)";
+      PreparedStatement preparedStmt = con.prepareStatement(query);
+      preparedStmt.setTimestamp(1, getCurrentTimeStamp());
+      preparedStmt.setString(2, wordCloud);
+
+      preparedStmt.execute();
+
+      con.close();
+    } catch (Exception e) {
+      System.out.println("EXCEPTION KAJ WORDCLOUD\n" + e);
+    }
+  }
+
+  private static String formatTuples(String wordCloud) throws JSONException {
+    String[] tuples = wordCloud.split("\\.");
+    JSONObject returnObj = new JSONObject();
+    int counter = 0;
+    for (String tuple : tuples) {
+      tuple = tuple.replaceAll("[()]", "");
+      String[] keyValue = tuple.split(",");
+      if (keyValue.length == 2) {
+        String word = keyValue[0];
+        Integer size = Integer.parseInt(keyValue[1]);
+        //if (!UtilsStatic.getStopWords().contains(word)) {
+        returnObj.put(word, size);
+        //counter++;
+        //}
+        //if (counter == WORDS_IN_CLOUD) {
+        //  break;
+        //}
+      }
+    }
+    return returnObj.toString();
   }
 
   public static class WorldMapDataCreator implements FlatMapFunction<String, String> {
@@ -155,6 +218,9 @@ public class TwitterExample {
         if (jsono.has("latitude")) {
           boolean result =
               putTweetInDatabase(tweetText, (Double) jsono.get("latitude"), (Double) jsono.get("longitude"));
+          if (!result) {
+            result = putTweetInDatabase("", (Double) jsono.get("latitude"), (Double) jsono.get("longitude"));
+          }
           if (result) {
             counter++;
             System.err.println(counter + ". " + jsono.toString());
@@ -177,11 +243,11 @@ public class TwitterExample {
             Double lat = Double.parseDouble(latitude.substring(0, latitude.length() - 1));
             obj.put("longitude", lng);
             obj.put("latitude", lat);
-            obj.put("radius", 4);
+            //obj.put("radius", 4);
           }
         }
       } catch (Exception e) {
-        System.err.println("EEEEEEEERRRRRRROOOORRRRRR");
+        //System.err.println("EEEEEEEERRRRRRROOOORRRRRR");
       }
       return obj;
     }
@@ -201,7 +267,6 @@ public class TwitterExample {
                 "root", "");
             String query = " insert into country_tweet (country, tweet,latitude,longitude,radius)"
                 + " values (?, ?, ?, ?, ?)";
-            System.out.println(country + "-" +tweetText);
             PreparedStatement preparedStmt = con.prepareStatement(query);
             preparedStmt.setString(1, country);
             preparedStmt.setString(2, tweetText);
@@ -250,7 +315,7 @@ public class TwitterExample {
 
       boolean isEnglish = jsonNode.has("user") && jsonNode.get("user").has("lang") && jsonNode.get("user")
           .get("lang")
-          .asText()
+          .asText()         //not only english tweets
           .equals("en");
 
       boolean hasText = jsonNode.has("text");
@@ -258,7 +323,7 @@ public class TwitterExample {
         StringTokenizer tokenizer = new StringTokenizer(jsonNode.get("text").asText());
 
         while (tokenizer.hasMoreTokens()) {
-          String result = tokenizer.nextToken().trim().toLowerCase().replaceAll("[^A-Za-z0-9#]", "");
+          String result = tokenizer.nextToken().trim().toLowerCase(); //.replaceAll("[^A-Za-z0-9#]", "")
 
           if (!result.equals("") && result.length() > 2) {
             out.collect(new Tuple2<>(result, 1));
