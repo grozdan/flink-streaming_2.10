@@ -14,6 +14,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.StringTokenizer;
 import java.util.stream.*;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
@@ -36,9 +38,12 @@ import org.codehaus.jackson.JsonNode;
 import org.codehaus.jackson.map.ObjectMapper;
 
 public class TwitterExample {
+  private static final String DATABASE_CONNECTION_STRING =
+      "jdbc:mysql://localhost:3306/apache-flink-db?useUnicode=true&characterEncoding=UTF-8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&useSSL=false";
   public static int counter = 0;
   public static final int WORDS_IN_CLOUD = 50;
   public static final int WORD_CLOUD_WINDOW_SECONDS = 20;
+
   public static void main(String[] args) throws Exception {
 
     args = new String[] {"--output", "C:\\Users\\Grozdan.Madjarov\\Desktop\\result_data.txt",
@@ -78,7 +83,7 @@ public class TwitterExample {
 
       locationMapStream.addSink(new RabitMqCustom<String>(
           connectionConfig,
-          "positions10",
+          "positions17",
           new SimpleStringSchema()));
 
       //locationMapStream.print();
@@ -132,14 +137,14 @@ public class TwitterExample {
                     return false;
                   })
                   .limit(WORDS_IN_CLOUD)
-                  .map(wordFrequency -> wordFrequency.toString())//delete this later
+                  .map(wordFrequency -> wordFrequency.toString())
                   .collect(Collectors.joining("."));
               putWordCloudInDatabase(wordCloud);
               collector.collect(wordCloud);
             }
           });
 
-      //wordCloud.print();
+      wordCloud.print();
       //wordCloud.addSink(new RabitMqCustom<String>(
       //    connectionConfig,
       //    "wordCloud4",
@@ -160,7 +165,7 @@ public class TwitterExample {
     try {
       Class.forName("com.mysql.cj.jdbc.Driver");
       Connection con = DriverManager.getConnection(
-          "jdbc:mysql://localhost:3306/apache-flink-db?useUnicode=true&characterEncoding=UTF-8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&useSSL=false",
+          DATABASE_CONNECTION_STRING,
           "root", "");
       String query = " insert into word_cloud_model (date_time, tweets_per_country)"
           + " values (?, ?)";
@@ -216,14 +221,18 @@ public class TwitterExample {
         JSONObject jsono = createObjectFromTweet(jsonNode.get("place"));
         jsono.put("name", tweetText);
         if (jsono.has("latitude")) {
-          boolean result =
+          //boolean result =
+          //    putTweetInDatabase(tweetText, (Double) jsono.get("latitude"), (Double) jsono.get("longitude"));
+
+          Pair<Boolean, String> pair =
               putTweetInDatabase(tweetText, (Double) jsono.get("latitude"), (Double) jsono.get("longitude"));
-          if (!result) {
-            result = putTweetInDatabase("", (Double) jsono.get("latitude"), (Double) jsono.get("longitude"));
+          if (!pair.getKey()) {
+            pair = putTweetInDatabase("", (Double) jsono.get("latitude"), (Double) jsono.get("longitude"));
           }
-          if (result) {
+          if (pair.getKey()) {
             counter++;
             System.err.println(counter + ". " + jsono.toString());
+            jsono.put("country", pair.getValue());
             out.collect(jsono.toString());
           }
         }
@@ -252,7 +261,8 @@ public class TwitterExample {
       return obj;
     }
 
-    private boolean putTweetInDatabase(String tweetText, Double lat, Double lng) throws IOException, JSONException {
+    private Pair<Boolean, String> putTweetInDatabase(String tweetText, Double lat, Double lng)
+        throws IOException, JSONException {
       String url = "http://ws.geonames.org/countryCodeJSON?lat=" + lat + "&lng="
           + lng + "&username=goki";
       String countryObject = getCountryFromLocation(url);
@@ -263,7 +273,7 @@ public class TwitterExample {
           try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             Connection con = DriverManager.getConnection(
-                "jdbc:mysql://localhost:3306/apache-flink-db?useUnicode=true&characterEncoding=UTF-8&useJDBCCompliantTimezoneShift=true&useLegacyDatetimeCode=false&serverTimezone=UTC&useSSL=false",
+                DATABASE_CONNECTION_STRING,
                 "root", "");
             String query = " insert into country_tweet (country, tweet,latitude,longitude,radius)"
                 + " values (?, ?, ?, ?, ?)";
@@ -277,15 +287,15 @@ public class TwitterExample {
             preparedStmt.execute();
 
             con.close();
-            return true;
+            return Pair.of(true, country);
           } catch (Exception e) {
 
             System.out.println(e);
-            return false;
+            return Pair.of(false, country);
           }
         }
       }
-      return false;
+      return Pair.of(false, null);
     }
 
     private String getCountryFromLocation(String urlString) throws IOException {
@@ -324,7 +334,8 @@ public class TwitterExample {
 
         while (tokenizer.hasMoreTokens()) {
           String result = tokenizer.nextToken().trim().toLowerCase(); //.replaceAll("[^A-Za-z0-9#]", "")
-
+          result = StringUtils.stripStart(result, "\";:<>?'/.,~`!@$%^&*()-_+=");
+          result = StringUtils.stripEnd(result, "\";/.,~`!@$%^&*()-+=");
           if (!result.equals("") && result.length() > 2) {
             out.collect(new Tuple2<>(result, 1));
           }
